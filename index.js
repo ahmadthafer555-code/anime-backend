@@ -123,22 +123,24 @@ app.get('/stream/:file_id', async (req, res) => {
     try {
         const fileId = req.params.file_id;
         
-        // 1. Get the MTProto user's ID
+        // 1. Get the MTProto user's ID and Bot's Username
         const me = await mtprotoClient.getMe();
         const myId = me.id.toString();
+        const botInfo = await bot.telegram.getMe();
+        const botUsername = botInfo.username;
         
-        // 2. Have the Bot send the video by file_id to the User's "Saved Messages"
+        // 2. Have the Bot send the video by file_id to the User
         const sentMsg = await bot.telegram.sendVideo(myId, fileId);
         
-        // 3. Fetch the message using MTProto
-        const messages = await mtprotoClient.getMessages(myId, { ids: [sentMsg.message_id] });
+        // 3. Fetch the message using MTProto from the chat with the Bot
+        const messages = await mtprotoClient.getMessages(botUsername, { ids: [sentMsg.message_id] });
         if (!messages || messages.length === 0 || !messages[0].media) {
             return res.status(404).send('Media not found');
         }
         
         const media = messages[0].media;
         
-        // 4. Delete the message to keep Saved Messages clean
+        // 4. Delete the message to keep the chat clean
         bot.telegram.deleteMessage(myId, sentMsg.message_id).catch(() => {});
 
         // 5. Calculate File Size
@@ -152,6 +154,8 @@ app.get('/stream/:file_id', async (req, res) => {
         }
         
         const range = req.headers.range;
+        const fileToDownload = media.document || media;
+
         if (range) {
             const parts = range.replace(/bytes=/, "").split("-");
             const start = parseInt(parts[0], 10);
@@ -166,7 +170,7 @@ app.get('/stream/:file_id', async (req, res) => {
             });
             
             for await (const chunk of mtprotoClient.iterDownload({
-                file: media,
+                file: fileToDownload,
                 offset: bigInt(start),
                 limit: chunksize,
                 requestSize: 1024 * 1024 // 1MB chunks
@@ -181,7 +185,7 @@ app.get('/stream/:file_id', async (req, res) => {
             });
             
             for await (const chunk of mtprotoClient.iterDownload({
-                file: media,
+                file: fileToDownload,
                 requestSize: 1024 * 1024
             })) {
                 res.write(chunk);
