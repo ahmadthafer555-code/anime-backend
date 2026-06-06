@@ -4,6 +4,9 @@ const cors = require('cors');
 const { Telegraf } = require('telegraf');
 const { createClient } = require('@supabase/supabase-js');
 const fetch = require('node-fetch');
+const { TelegramClient } = require('telegram');
+const { StringSession } = require('telegram/sessions');
+const bigInt = require('big-integer');
 
 const app = express();
 app.use(cors());
@@ -22,6 +25,23 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 // Initialize Telegram Bot
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN || 'YOUR_TELEGRAM_BOT_TOKEN_HERE');
+
+// Initialize MTProto Client (For unlimited streaming)
+const apiId = 36663397;
+const apiHash = '6663349d5f967cfb3d242cedfd4fcdbc';
+const stringSession = new StringSession(process.env.SESSION_STRING || '1AgAOMTQ5LjE1NC4xNjcuNTEBu25gw4tJr2j9hKSSbncna6ardj4jBOpIWdAs6l9veF/pusToT4qHMFqpbV7C7DkBn2y0HUsXQTGhv9HZ3yGpuamxeYKKS23q3e0LaanpOqASZVUOq7gllvDXsa39chOe5MRQ8CcoEsqmST3oUOTurt64HihGIrQq//xxtlWDN95sRzSdHaE99mX4A9AqsRSLn+WOeHYS6xRYO7AP+Oy8CoIB7Z2EKO1uiIhwOz1cnlPQXK7uUHMJzS8EHm6mb0wFBIKai106XdiVi7a6Flib36gEjJQbvsJntWSMfcKfSaU9HyeaRKXtfb5m/j3hVflOBqELzq7SYVGxMYR1iLocw+k=');
+
+const mtprotoClient = new TelegramClient(stringSession, apiId, apiHash, { connectionRetries: 5 });
+
+(async () => {
+    try {
+        console.log('Connecting MTProto client for streaming...');
+        await mtprotoClient.connect();
+        console.log('MTProto client connected successfully! 🚀');
+    } catch (err) {
+        console.error('Failed to connect MTProto client:', err);
+    }
+})();
 
 // ==========================================
 // 1. PAYMENT SYSTEM (Telegram Stars)
@@ -102,24 +122,75 @@ bot.on('successful_payment', async (ctx) => {
 app.get('/stream/:file_id', async (req, res) => {
     try {
         const fileId = req.params.file_id;
-        const fileLink = await bot.telegram.getFileLink(fileId);
-        const response = await fetch(fileLink.href);
         
-        if (!response.ok) {
-            return res.status(response.status).send('Failed to fetch video from Telegram');
+        // 1. Get the MTProto user's ID
+        const me = await mtprotoClient.getMe();
+        const myId = me.id.toString();
+        
+        // 2. Have the Bot send the video by file_id to the User's "Saved Messages"
+        const sentMsg = await bot.telegram.sendVideo(myId, fileId);
+        
+        // 3. Fetch the message using MTProto
+        const messages = await mtprotoClient.getMessages(myId, { ids: [sentMsg.message_id] });
+        if (!messages || messages.length === 0 || !messages[0].media) {
+            return res.status(404).send('Media not found');
         }
-
-        const size = response.headers.get('content-length');
-        const contentType = response.headers.get('content-type') || 'video/mp4';
         
-        res.setHeader('Content-Type', contentType);
-        if (size) res.setHeader('Content-Length', size);
-        res.setHeader('Accept-Ranges', 'bytes');
+        const media = messages[0].media;
+        
+        // 4. Delete the message to keep Saved Messages clean
+        bot.telegram.deleteMessage(myId, sentMsg.message_id).catch(() => {});
 
-        response.body.pipe(res);
+        // 5. Calculate File Size
+        let fileSize = 0;
+        if (media.document) {
+            fileSize = Number(media.document.size);
+        } else if (media.video) {
+            fileSize = Number(media.video.size);
+        } else {
+            return res.status(400).send('Invalid media type');
+        }
+        
+        const range = req.headers.range;
+        if (range) {
+            const parts = range.replace(/bytes=/, "").split("-");
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+            const chunksize = (end - start) + 1;
+            
+            res.writeHead(206, {
+                'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunksize,
+                'Content-Type': 'video/mp4',
+            });
+            
+            for await (const chunk of mtprotoClient.iterDownload({
+                file: media,
+                offset: bigInt(start),
+                limit: chunksize,
+                requestSize: 1024 * 1024 // 1MB chunks
+            })) {
+                res.write(chunk);
+            }
+            res.end();
+        } else {
+            res.writeHead(200, {
+                'Content-Length': fileSize,
+                'Content-Type': 'video/mp4',
+            });
+            
+            for await (const chunk of mtprotoClient.iterDownload({
+                file: media,
+                requestSize: 1024 * 1024
+            })) {
+                res.write(chunk);
+            }
+            res.end();
+        }
     } catch (error) {
         console.error('Streaming error:', error);
-        res.status(500).send('Internal Server Error');
+        if (!res.headersSent) res.status(500).send('Internal Server Error');
     }
 });
 

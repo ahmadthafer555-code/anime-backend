@@ -11,10 +11,14 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@mtcute/file-id": "^0.29.0",
     "@supabase/supabase-js": "^2.107.0",
+    "big-integer": "^1.6.52",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "telegraf": "^4.16.3"
+    "input": "^1.0.1",
+    "telegraf": "^4.16.3",
+    "telegram": "^2.26.22"
   }
 }
