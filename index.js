@@ -130,18 +130,19 @@ app.get('/stream/:file_id', async (req, res) => {
         const botUsername = botInfo.username;
         
         // 2. Have the Bot send the video by file_id to the User
-        const sentMsg = await bot.telegram.sendVideo(myId, fileId);
+        await bot.telegram.sendVideo(myId, fileId);
         
-        // 3. Fetch the message using MTProto from the chat with the Bot
-        const messages = await mtprotoClient.getMessages(botUsername, { ids: [sentMsg.message_id] });
+        // 3. Fetch the last message using MTProto from the chat with the Bot
+        const messages = await mtprotoClient.getMessages(botUsername, { limit: 1 });
         if (!messages || messages.length === 0 || !messages[0].media) {
             return res.status(404).send('Media not found');
         }
         
         const media = messages[0].media;
+        const mtprotoMsgId = messages[0].id;
         
         // 4. Delete the message to keep the chat clean
-        bot.telegram.deleteMessage(myId, sentMsg.message_id).catch(() => {});
+        mtprotoClient.deleteMessages(botUsername, [mtprotoMsgId], { revoke: true }).catch(() => {});
 
         // 5. Calculate File Size
         let fileSize = 0;
