@@ -119,6 +119,8 @@ bot.on('successful_payment', async (ctx) => {
 // 2. STREAMING SYSTEM
 // ==========================================
 
+const fileCache = new Map();
+
 app.get('/stream/:file_id', async (req, res) => {
     try {
         const fileId = req.params.file_id;
@@ -129,20 +131,28 @@ app.get('/stream/:file_id', async (req, res) => {
         const botInfo = await bot.telegram.getMe();
         const botUsername = botInfo.username;
         
-        // 2. Have the Bot send the video by file_id to the User
-        await bot.telegram.sendVideo(myId, fileId);
+        // 2. Resolve or get cached message ID
+        let mtprotoMsgId = fileCache.get(fileId);
         
-        // 3. Fetch the last message using MTProto from the chat with the Bot
-        const messages = await mtprotoClient.getMessages(botUsername, { limit: 1 });
+        if (!mtprotoMsgId) {
+            await bot.telegram.sendVideo(myId, fileId);
+            const msgs = await mtprotoClient.getMessages(botUsername, { limit: 1 });
+            if (msgs && msgs.length > 0) {
+                mtprotoMsgId = msgs[0].id;
+                fileCache.set(fileId, mtprotoMsgId);
+            }
+        }
+        
+        // 3. Fetch the message using MTProto
+        const messages = await mtprotoClient.getMessages(botUsername, { ids: [mtprotoMsgId] });
         if (!messages || messages.length === 0 || !messages[0].media) {
+            fileCache.delete(fileId); // invalid cache
             return res.status(404).send('Media not found');
         }
         
         const media = messages[0].media;
-        const mtprotoMsgId = messages[0].id;
         
-        // 4. Delete the message to keep the chat clean
-        mtprotoClient.deleteMessages(botUsername, [mtprotoMsgId], { revoke: true }).catch(() => {});
+        // (We no longer delete the message, to allow iterDownload and Range Requests to work perfectly)
 
         // 5. Calculate File Size
         let fileSize = 0;
